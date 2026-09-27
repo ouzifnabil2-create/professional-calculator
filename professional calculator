@@ -1,0 +1,210 @@
+"""Scientific calculator. Run with Python 3: python "professional calculator"."""
+
+import ast
+import math
+import operator
+import json
+import os
+import threading
+import urllib.error
+import urllib.request
+import tkinter as tk
+from tkinter import ttk
+
+
+class Calculator:
+	"""A compact scientific calculator with a safe expression evaluator."""
+
+	FUNCTIONS = {
+		"sin": math.sin, "cos": math.cos, "tan": math.tan,
+		"asin": math.asin, "acos": math.acos, "atan": math.atan,
+		"sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+		"sqrt": math.sqrt, "ln": math.log, "log": math.log10,
+		"exp": math.exp, "abs": abs, "floor": math.floor, "ceil": math.ceil,
+	}
+	BINARY = {ast.Add: operator.add, ast.Sub: operator.sub,
+			  ast.Mult: operator.mul, ast.Div: operator.truediv,
+			  ast.Pow: operator.pow, ast.Mod: operator.mod}
+	UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+	def __init__(self, root):
+		self.root = root
+		self.root.title("Scientific Calculator")
+		self.root.geometry("650x510")
+		self.root.minsize(560, 450)
+		self.root.configure(bg="#111827")
+		self.text = tk.StringVar()
+		self.mode = tk.StringVar(value="DEG")
+		self.answer = 0
+		self.history = []
+		self.ai_busy = False
+		self._make_ui()
+		root.bind("<Return>", lambda _e: self.calculate())
+		root.bind("<Escape>", lambda _e: self.clear())
+
+	def _make_ui(self):
+		style = ttk.Style()
+		style.theme_use("clam")
+		style.configure("TButton", font=("Segoe UI", 11), padding=8,
+						background="#263449", foreground="white", borderwidth=0)
+		style.map("TButton", background=[("active", "#3b506d")])
+		style.configure("Accent.TButton", background="#2563eb", foreground="white")
+
+		entry = tk.Entry(self.root, textvariable=self.text, justify="right",
+						 font=("Segoe UI", 26), bg="#1f2937", fg="white",
+						 insertbackground="white", relief="flat", bd=0)
+		entry.pack(fill="x", padx=18, pady=(20, 8), ipady=15)
+		entry.focus_set()
+		tk.Label(self.root, textvariable=self.mode, anchor="e", bg="#111827",
+				 fg="#9ca3af", font=("Segoe UI", 10)).pack(fill="x", padx=22, pady=(0, 10))
+
+		keys = [
+			["sin", "cos", "tan", "asin", "acos", "⌫"],
+			["sinh", "cosh", "tanh", "sqrt", "ln", "C"],
+			["7", "8", "9", "÷", "(", ")"],
+			["4", "5", "6", "×", "^", "π"],
+			["1", "2", "3", "−", "%", "e"],
+			["0", ".", "Ans", "+", "DEG/RAD", "="],
+		]
+		grid = tk.Frame(self.root, bg="#111827")
+		grid.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+		for c in range(6):
+			grid.columnconfigure(c, weight=1, uniform="column")
+		for r, row in enumerate(keys):
+			grid.rowconfigure(r, weight=1, uniform="row")
+			for c, key in enumerate(row):
+				ttk.Button(grid, text=key, command=lambda k=key: self.press(k),
+						   style="Accent.TButton" if key == "=" else "TButton").grid(
+							   row=r, column=c, sticky="nsew", padx=4, pady=4)
+
+		ai_row = tk.Frame(self.root, bg="#111827")
+		ai_row.pack(fill="x", padx=18, pady=(0, 12))
+		self.ai_question = tk.StringVar()
+		tk.Entry(ai_row, textvariable=self.ai_question, font=("Segoe UI", 11)).pack(
+			side="left", fill="x", expand=True, padx=(0, 8), ipady=7)
+		ttk.Button(ai_row, text="AI Math Help", command=self.ask_ai).pack(side="right")
+
+	def ask_ai(self):
+		"""Request a step-by-step solution using an optional compatible API."""
+		question = self.ai_question.get().strip()
+		api_key = os.environ.get("OPENAI_API_KEY")
+		if not question:
+			self.mode.set("Enter a math problem for AI help")
+			return
+		if not api_key:
+			self.mode.set("Set OPENAI_API_KEY to enable AI Math Help")
+			return
+		if self.ai_busy:
+			self.mode.set("AI is already working")
+			return
+		self.ai_busy = True
+		self.mode.set("AI is solving your problem...")
+		threading.Thread(target=self._request_ai, args=(question, api_key), daemon=True).start()
+
+	def _request_ai(self, question, api_key):
+		base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+		model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+		payload = json.dumps({"model": model, "messages": [
+			{"role": "system", "content": "You are a patient math tutor. Explain solutions step by step."},
+			{"role": "user", "content": question}], "temperature": 0.2}).encode("utf-8")
+		request = urllib.request.Request(base_url + "/chat/completions", data=payload,
+			headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+			method="POST")
+		try:
+			with urllib.request.urlopen(request, timeout=45) as response:
+				data = json.loads(response.read().decode("utf-8"))
+			answer = data["choices"][0]["message"]["content"]
+		except (urllib.error.URLError, KeyError, IndexError, ValueError, TimeoutError) as error:
+			answer = "AI request failed: " + str(error)
+		self.root.after(0, lambda: self._show_ai_answer(answer))
+
+	def _show_ai_answer(self, answer):
+		self.ai_busy = False
+		self.mode.set("AI solution")
+		window = tk.Toplevel(self.root)
+		window.title("AI Math Help")
+		window.geometry("560x400")
+		text = tk.Text(window, wrap="word", font=("Segoe UI", 11), padx=12, pady=12)
+		text.pack(fill="both", expand=True)
+		text.insert("1.0", answer)
+		text.configure(state="disabled")
+
+	def press(self, key):
+		if key == "=":
+			self.calculate()
+		elif key == "C":
+			self.clear()
+		elif key == "⌫":
+			self.text.set(self.text.get()[:-1])
+		elif key == "DEG/RAD":
+			self.mode.set("RAD" if self.mode.get() == "DEG" else "DEG")
+		elif key == "Ans":
+			self._append(str(self.answer))
+		elif key in ("π", "e"):
+			self._append({"π": "pi", "e": "e"}[key])
+		elif key in self.FUNCTIONS:
+			self._append(key + "(")
+		else:
+			self._append({"÷": "/", "×": "*", "−": "-"}.get(key, key))
+
+	def _append(self, value):
+		self.text.set(self.text.get() + value)
+
+	def _evaluate(self, expression):
+		expression = expression.replace("^", "**")
+		tree = ast.parse(expression, mode="eval")
+
+		def visit(node):
+			if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+				return node.value
+			if isinstance(node, ast.Name):
+				constants = {"pi": math.pi, "e": math.e, "tau": math.tau}
+				if node.id in constants:
+					return constants[node.id]
+			if isinstance(node, ast.BinOp) and type(node.op) in self.BINARY:
+				left, right = visit(node.left), visit(node.right)
+				if isinstance(node.op, ast.Pow) and abs(right) > 1000:
+					raise ValueError("Exponent too large")
+				return self.BINARY[type(node.op)](left, right)
+			if isinstance(node, ast.UnaryOp) and type(node.op) in self.UNARY:
+				return self.UNARY[type(node.op)](visit(node.operand))
+			if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+					and node.func.id in self.FUNCTIONS and len(node.args) == 1
+					and not node.keywords):
+				name, value = node.func.id, visit(node.args[0])
+				if name in ("sin", "cos", "tan") and self.mode.get() == "DEG":
+					value = math.radians(value)
+				result = self.FUNCTIONS[name](value)
+				if name in ("asin", "acos", "atan") and self.mode.get() == "DEG":
+					result = math.degrees(result)
+				return result
+			raise ValueError("Invalid expression")
+
+		result = visit(tree.body)
+		if isinstance(result, complex) or not math.isfinite(float(result)):
+			raise ValueError("Result outside supported range")
+		return result
+
+	def calculate(self):
+		expression = self.text.get().strip()
+		if not expression:
+			return
+		try:
+			result = self._evaluate(expression)
+			shown = str(int(result)) if isinstance(result, float) and result.is_integer() else f"{result:.12g}"
+			self.history.append(f"{expression} = {shown}")
+			self.answer = result
+			self.text.set(shown)
+			self.mode.set(f"{self.mode.get()}  |  {expression} = {shown}")
+		except (ValueError, TypeError, SyntaxError, ArithmeticError, OverflowError) as error:
+			self.mode.set(f"Error: {error}")
+
+	def clear(self):
+		self.text.set("")
+		self.mode.set("DEG" if self.mode.get().startswith("DEG") else "RAD")
+
+
+if __name__ == "__main__":
+	window = tk.Tk()
+	Calculator(window)
+	window.mainloop()
